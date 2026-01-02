@@ -35,11 +35,11 @@ Install Ubuntu 22.04 or 24.04 on a virtual machine with the following specificat
 - Combine them into RAID 0 using mdadm. 
 - Create a Volume Group (VG) with the RAID device. 
 - Create Logical Volumes: 
-- - /apps (20GB) 
-- - /data (30GB) 
+    - /apps (20GB) 
+    - /data (30GB) 
 - Format with ext4 and mount: 
-- - /apps → /dev/<vg_name>/lv_apps 
-- - /data → /dev/<vg_name>/lv_data 
+    - /apps → /dev/<vg_name>/lv_apps 
+    - /data → /dev/<vg_name>/lv_data 
 
 ### Step 3: Deploy Web Page and MySQL 
 - Install Apache or Nginx, place a sample HTML in /apps 
@@ -49,8 +49,8 @@ Install Ubuntu 22.04 or 24.04 on a virtual machine with the following specificat
 - Create local user accounts as  appuser and dbuser. 
 - Grant sudo privileges: 
 - Modify /etc/sudoers using visudo. 
- - - Configure appuser with → NOPASSWD option 
- - - Configure dbuser with → PASSWORD option  
+    - Configure appuser with → NOPASSWD option 
+    - Configure dbuser with → PASSWORD option  
 - Restrict /data mountpoint access from appuser (dbuser cannot be able to access the /apps) 
 - Configure proper ownership and permissions (appuser needs to have access only to /apps and dbuser needs to have access only to /data)
 
