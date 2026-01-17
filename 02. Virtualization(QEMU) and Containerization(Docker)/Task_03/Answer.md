@@ -1,364 +1,171 @@
-# Linux Administration and Troubleshooting Assignment
+# Task 03 - QEMU Virtual Machine Setup Guide
 
-## Secure Web and Database Deployment with LVM, RAID, User Policies, and SELinux Monitoring
+## Overview
 
----
+QEMU (Quick Emulator) is a powerful, open-source machine emulator and virtualizer that allows you to run operating systems as if they were running on real hardware. It can emulate CPU, memory, storage, and various devices. When combined with **KVM (Kernel-based Virtual Machine)**, it leverages hardware virtualization capabilities for near-native performance.
 
-## Initial System Setup
-Update and Upgrade System
-```bash
-sudo apt update && sudo apt upgrade -y
-```
+This guide provides step-by-step instructions to set up an Ubuntu virtual machine using QEMU and KVM, with SSH access via port forwarding.
 
-### Install Required Packages
-```bash
-sudo apt install -y mdadm lvm2 apache2 mysql-server vim net-tools
-```
+### Key Features
+
+- **Hardware Emulation**: Emulates CPU, memory, storage, and network devices
+- **KVM Integration**: Hardware virtualization for near-native performance
+- **Remote Access**: SSH and VNC (Virtual Network Computing) support
+- **Flexible Configuration**: Customizable memory, CPU cores, and storage
 
 ---
 
-## 1. Create the Loop Devices
+## Prerequisites
 
-### Create First Disk Image (30GB)
-```bash
-sudo dd if=/dev/zero of=/disk1.img bs=1G count=30
-```
-
-### Create Second Disk Image (30GB)
-```bash
-sudo dd if=/dev/zero of=/disk2.img bs=1G count=30
-```
-
-**Parameters:**
-- `if=/dev/zero`: Reads zeros as input
-- `of=disk1.img`: Specifies the output file name
-- `bs=1G count=30`: Creates 30GB disk image
-
-### Attach Loop Devices
-Verify the attachment location for disk1:
-```bash
-sudo losetup --find --show /disk1.img
-```
-
-Verify the attachment location for disk2:
-```bash
-sudo losetup --find --show /disk2.img
-```
+- Linux system with virtualization support (Intel VT-x or AMD-V)
+- Sudo/root access
+- Ubuntu ISO file (24.04 LTS recommended)
+- Sufficient disk space (minimum 20GB for the VM)
 
 ---
 
-## 2. Combine Disks into RAID 0 Using mdadm
+## Installation Steps
 
-### Create RAID 0 Array
+### Step 1: System Update
+
+Update your package manager to ensure you have the latest software versions:
+
 ```bash
-sudo mdadm --create /dev/md0 \
-  --level=0 \
-  --raid-devices=2 \
-  /dev/loop13 /dev/loop15
+sudo apt-get update && sudo apt-get upgrade -y
 ```
 
-### Verify RAID Configuration
+### Step 2: Install QEMU, KVM, and Related Tools
+
+Install the necessary virtualization packages:
+
 ```bash
-lsblk
+sudo apt install qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients bridge-utils virt-manager -y
 ```
 
-### Save RAID Configuration
+**Package Descriptions:**
+- `qemu-system-x86`: QEMU emulator for x86/x64 systems
+- `qemu-utils`: QEMU utilities for image management
+- `libvirt-daemon-system`: Libvirt daemon for VM management
+- `libvirt-clients`: CLI tools for interacting with libvirt
+- `bridge-utils`: Network bridging utilities
+- `virt-manager`: GUI tool for managing virtual machines
+
+### Step 3: Verify KVM Support
+
+Check if your CPU supports hardware virtualization. A return value greater than 0 indicates support:
+
 ```bash
-sudo mdadm --detail --scan | sudo tee -a /etc/mdadm/mdadm.conf
-sudo update-initramfs -u
+egrep -c '(vmx|svm)' /proc/cpuinfo
 ```
+
+**Expected Output:** A number > 0 (e.g., 4, 8, 16) indicates virtualization support is available.
+
+- **vmx**: Intel VT-x support
+- **svm**: AMD-V support
+
+### Step 4: Create the Hard Disk Image
+
+Create a 20GB QCOW2 (QEMU Copy-On-Write) format disk image. QCOW2 is space-efficient and supports snapshots:
+
+```bash
+qemu-img create -f qcow2 ubuntu-vm.qcow2 20G
+```
+
+You can verify the image creation:
+
+```bash
+ls -lh ubuntu-vm.qcow2
+```
+
+### Step 5: Install Ubuntu on the VM
+
+Boot the VM from the Ubuntu ISO to begin installation. The VM will have 4GB RAM, hardware-accelerated CPU, and KVM enabled:
+
+```bash
+qemu-system-x86_64 \
+  -m 4G \
+  -cpu host \
+  -enable-kvm \
+  -drive file=ubuntu-vm.qcow2,format=qcow2 \
+  -cdrom /path/to/ubuntu-24.04-live-server-amd64.iso \
+  -boot d \
+  -vga virtio \
+  -display vnc=:1
+```
+
+**Command Parameters:**
+- `-m 4G`: Allocate 4GB RAM (adjust as needed)
+- `-cpu host`: Use host CPU features for better performance
+- `-enable-kvm`: Enable KVM hardware virtualization
+- `-drive file=ubuntu-vm.qcow2,format=qcow2`: Specify the disk image
+- `-cdrom /path/to/iso`: Path to the Ubuntu ISO file
+- `-boot d`: Boot from CD-ROM (d = DVD/CD)
+- `-vga virtio`: Use virtio graphics for better performance
+- `-display vnc=:1`: Enable VNC display on port 5901
+
+**Installation Access:**
+Connect to the VM via VNC at `localhost:5901` using a VNC client during installation.
+
+### Step 6: Boot the VM After Installation
+
+Once Ubuntu is installed, boot the VM normally from the disk:
+
+```bash
+qemu-system-x86_64 \
+  -m 4G \
+  -cpu host \
+  -enable-kvm \
+  -drive file=ubuntu-vm.qcow2,format=qcow2 \
+  -boot c \
+  -vga virtio \
+  -display vnc=:1
+```
+
+**Key Change:**
+- `-boot c`: Boot from the disk (c = primary disk)
+
+### Step 7: Enable SSH via Port Forwarding
+
+To access the VM via SSH, configure QEMU user-mode networking with port forwarding. This forwards TCP port 2222 on the host to port 22 (SSH) on the VM:
+
+```bash
+qemu-system-x86_64 \
+  -m 4G \
+  -cpu host \
+  -enable-kvm \
+  -drive file=ubuntu-vm.qcow2,format=qcow2 \
+  -boot c \
+  -vga virtio \
+  -net user,hostfwd=tcp::2222-:22 \
+  -net nic \
+  -display vnc=:1
+```
+
+**Networking Parameters:**
+- `-net user,hostfwd=tcp::2222-:22`: Enable user-mode networking with port forwarding (host 2222 → VM 22)
+- `-net nic`: Create a virtual network interface card
+
+**Inside the VM:** Ensure SSH is installed and running:
+
+```bash
+sudo apt install openssh-server -y
+sudo systemctl start ssh
+sudo systemctl enable ssh
+```
+
+### Step 8: Connect via SSH
+
+From the host machine, connect to the VM using SSH:
+
+```bash
+ssh username@localhost -p 2222
+```
+
+**Example:**
+```bash
+ssh ubuntu@localhost -p 2222
+```
+
+Replace `ubuntu` with your actual username from the VM installation.
 
 ---
-
-## 3. Create Logical Volumes
-
-### Step 1: Create Physical Volume
-```bash
-sudo pvcreate /dev/md0
-```
-
-### Step 2: Create Volume Group
-```bash
-sudo vgcreate myvg /dev/md0
-```
-
-### Step 3: Create Logical Volumes
-Create lv_apps (2GB):
-```bash
-sudo lvcreate -L 2G -n lv_apps myvg
-```
-
-Create lv_data (2GB):
-```bash
-sudo lvcreate -L 2G -n lv_data myvg
-```
-
-### Step 4: Create Mount Points
-```bash
-sudo mkdir /apps /data
-```
-
-### Step 5: Create File Systems
-Format lv_apps:
-```bash
-sudo mkfs.ext4 /dev/myvg/lv_apps
-```
-
-Format lv_data:
-```bash
-sudo mkfs.ext4 /dev/myvg/lv_data
-```
-
-### Step 6: Mount Logical Volumes
-Mount lv_apps:
-```bash
-sudo mount /dev/myvg/lv_apps /apps
-```
-
-Mount lv_data:
-```bash
-sudo mount /dev/myvg/lv_data /data
-```
-
-### Step 7: Verify Mounts
-```bash
-df -h
-```
-
----
-
-## 4. Deploy the Web Page
-
-### Create the Sample Web Page
-```bash
-echo "<html><body><h1>Sample Web Page</h1></body></html>" | sudo tee /apps/index.html
-```
-
-### Change the Apache DocumentRoot Path
-Edit the Apache configuration file:
-```bash
-sudo vi /etc/apache2/sites-enabled/000-default.conf
-```
-
-Change `DocumentRoot /var/www/html` to `DocumentRoot /apps`
-
-### Restart Apache
-```bash
-sudo systemctl restart apache2
-```
-
----
-
-## 5. Install and Configure MySQL
-
-### Install MySQL Server
-```bash
-sudo apt install mysql-server -y
-```
-
-### Secure MySQL Installation
-```bash
-sudo mysql_secure_installation
-```
-(Set root password, remove anonymous users, disable remote root login, etc.)
-
-### Stop MySQL Service
-```bash
-sudo systemctl stop mysql
-```
-
-### Create MySQL Data Directory
-```bash
-sudo mkdir /data/mysql
-```
-
-### Copy Existing Data
-```bash
-sudo rsync -av /var/lib/mysql /data/
-```
-
-### Update MySQL Configuration
-Edit the MySQL configuration file:
-```bash
-sudo vim /etc/mysql/mysql.conf.d/mysqld.cnf
-```
-
-Change `datadir = /var/lib/mysql` to `datadir = /data/mysql`
-
-### Set Proper Ownership
-```bash
-sudo chown -R mysql:mysql /data/mysql
-```
-
-### Start MySQL Service
-```bash
-sudo systemctl start mysql
-```
-
----
-
-## 6. Create Users with Sudo and Directory Access
-
-### Create Users
-Create appuser:
-```bash
-sudo useradd -m appuser
-```
-
-Create dbuser:
-```bash
-sudo useradd -m dbuser
-```
-
-### Set Passwords
-Set password for appuser (same as username):
-```bash
-sudo passwd appuser
-```
-
-Set password for dbuser (same as username):
-```bash
-sudo passwd dbuser
-```
-
-### Grant Sudo Privileges
-Edit the sudoers file:
-```bash
-sudo visudo
-```
-
-Add the following lines:
-```
-appuser ALL=(ALL) NOPASSWD:ALL
-dbuser ALL=(ALL) ALL
-```
-
-### Restrict Directory Access
-
-Set ownership and permissions for `/apps`:
-```bash
-sudo chown appuser:appuser /apps
-sudo chmod 700 /apps
-```
-
-Set ownership and permissions for `/data`:
-```bash
-sudo chown dbuser:dbuser /data
-sudo chmod 700 /data
-```
-
-Override MySQL subdirectory ownership:
-```bash
-sudo chown -R mysql:mysql /data/mysql
-```
-
-### Test Directory Access
-Test appuser access to /data (should deny):
-```bash
-su - appuser
-ls /data
-```
-
-Test dbuser access to /apps (should deny):
-```bash
-su - dbuser
-ls /apps
-```
-
----
-
-## 7. Install and Configure SELinux
-
-### Install SELinux Packages
-```bash
-sudo apt install policycoreutils selinux-utils selinux-basics -y
-```
-
-### Activate SELinux
-```bash
-sudo selinux-activate
-sudo reboot
-```
-
-### Set Enforcing Mode
-```bash
-sudo selinux-config-enforcing
-sudo reboot
-```
-
-### Disable AppArmor (Conflicts with SELinux)
-Stop AppArmor:
-```bash
-sudo systemctl stop apparmor
-```
-
-Disable AppArmor permanently:
-```bash
-sudo systemctl disable apparmor
-```
-
-### Map dbuser to SELinux Context
-```bash
-sudo semanage login -a -s guest_u dbuser
-```
-
-### Verify SELinux Configuration
-```bash
-sudo semanage login -l
-```
-
----
-
-## 8. Kernel Dump and Performance Analysis
-
-### Enable KDump
-```bash
-sudo apt install linux-crashdump -y
-```
-
-Reboot the system:
-```bash
-sudo reboot
-```
-
-### Verify KDump Status
-```bash
-sudo systemctl status kdump-tools
-```
-
-### Trigger a Controlled Crash
-
-Enable SysRq:
-```bash
-echo 1 | sudo tee /proc/sys/kernel/sysrq
-```
-
-Trigger the crash (system will crash and reboot automatically):
-```bash
-echo c | sudo tee /proc/sysrq-trigger
-```
-
-### Analyze the Kernel Dump
-
-Install debug tools:
-```bash
-sudo apt install crash linux-image-$(uname -r)-dbg -y
-```
-
-Analyze the dump file:
-```bash
-sudo crash /var/crash/<timestamp>/vmcore /usr/lib/debug/boot/vmlinux-$(uname -r)
-```
-
----
-
-## Summary
-
-This comprehensive guide covers:
-- Loop device and RAID 0 setup for storage redundancy
-- LVM configuration for flexible storage management
-- Apache web server deployment on dedicated logical volume
-- MySQL database installation with custom data directory
-- User creation with granular permission control
-- SELinux security enforcement
-- Kernel dump analysis for troubleshooting
