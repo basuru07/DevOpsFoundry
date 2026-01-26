@@ -1,364 +1,314 @@
-# Linux Administration and Troubleshooting Assignment
+# DNS and DHCP Server Setup Guide
 
-## Secure Web and Database Deployment with LVM, RAID, User Policies, and SELinux Monitoring
+## Phase 1: Virtual Machine Network Configuration
 
----
+### Step 1: Configure VM Network Adapters
 
-## Initial System Setup
-Update and Upgrade System
-```bash
-sudo apt update && sudo apt upgrade -y
-```
+For each VM in VirtualBox settings:
 
-### Install Required Packages
-```bash
-sudo apt install -y mdadm lvm2 apache2 mysql-server vim net-tools
-```
+1. Go to **Settings → Network**
+2. **Adapter 1**: Set to `NAT` (enabled)
+3. **Adapter 2**: Set to `Internal Network` (enabled)
+   - This creates a private LAN between VMs as required by the task
 
 ---
 
-## 1. Create the Loop Devices
+## Phase 2: DNS Server Configuration
 
-### Create First Disk Image (30GB)
+### Step 2: Configure DNS Server Network Interface
+
+Login to the DNS server and configure netplan for a fixed IP address.
+
 ```bash
-sudo dd if=/dev/zero of=/disk1.img bs=1G count=30
+sudo nano /etc/netplan/00-installer-config.yaml
 ```
 
-### Create Second Disk Image (30GB)
-```bash
-sudo dd if=/dev/zero of=/disk2.img bs=1G count=30
+Replace with:
+
+```yaml
+network:
+  version: 2
+  ethernets:
+    enp0s8:
+      dhcp4: no
+      addresses:
+        - 192.168.50.1/24
+      gateway4: 192.168.50.1
+      nameservers:
+        addresses: [127.0.0.1]
 ```
 
-**Parameters:**
-- `if=/dev/zero`: Reads zeros as input
-- `of=disk1.img`: Specifies the output file name
-- `bs=1G count=30`: Creates 30GB disk image
+Apply and verify:
 
-### Attach Loop Devices
-Verify the attachment location for disk1:
 ```bash
-sudo losetup --find --show /disk1.img
-```
-
-Verify the attachment location for disk2:
-```bash
-sudo losetup --find --show /disk2.img
-```
-
----
-
-## 2. Combine Disks into RAID 0 Using mdadm
-
-### Create RAID 0 Array
-```bash
-sudo mdadm --create /dev/md0 \
-  --level=0 \
-  --raid-devices=2 \
-  /dev/loop13 /dev/loop15
-```
-
-### Verify RAID Configuration
-```bash
-lsblk
-```
-
-### Save RAID Configuration
-```bash
-sudo mdadm --detail --scan | sudo tee -a /etc/mdadm/mdadm.conf
-sudo update-initramfs -u
+sudo netplan apply
+ip a
 ```
 
 ---
 
-## 3. Create Logical Volumes
+### Step 3: Configure DHCP Server Network Interface
 
-### Step 1: Create Physical Volume
+Login to the DHCP server and configure netplan.
+
 ```bash
-sudo pvcreate /dev/md0
+sudo nano /etc/netplan/00-installer-config.yaml
 ```
 
-### Step 2: Create Volume Group
-```bash
-sudo vgcreate myvg /dev/md0
+Replace with:
+
+```yaml
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    enp0s8:
+      dhcp4: no
+      addresses:
+        - 192.168.50.2/24
+      nameservers:
+        addresses: [192.168.50.1]
 ```
 
-### Step 3: Create Logical Volumes
-Create lv_apps (2GB):
+Apply and verify:
+
 ```bash
-sudo lvcreate -L 2G -n lv_apps myvg
+sudo netplan apply
+ip a
 ```
 
-Create lv_data (2GB):
+### Expected Network Configuration
+
+| Server | Interface | IP Address |
+|--------|-----------|-----------|
+| main (DNS) | enp0s8 | 192.168.50.1 |
+| k8s-worker2 (DHCP) | enp0s8 | 192.168.50.2 |
+
+---
+
+## Phase 3: Install and Configure BIND9 (DNS Server)
+
+### Step 4: Install BIND9
+
 ```bash
-sudo lvcreate -L 2G -n lv_data myvg
+sudo apt install bind9 bind9utils -y
 ```
 
-### Step 4: Create Mount Points
+### Step 5: Define DNS Zones
+
 ```bash
-sudo mkdir /apps /data
+sudo nano /etc/bind/named.conf.local
 ```
 
-### Step 5: Create File Systems
-Format lv_apps:
-```bash
-sudo mkfs.ext4 /dev/myvg/lv_apps
+Add:
+
+```bind
+zone "linuxtraining25.com" {
+    type master;
+    file "/etc/bind/db.linuxtraining25.com";
+};
+
+zone "50.168.192.in-addr.arpa" {
+    type master;
+    file "/etc/bind/db.192.168.50";
+};
 ```
 
-Format lv_data:
+#### Zone Type Reference
+
+- **Forward Zone**: Maps hostnames → IP addresses
+- **Reverse Zone**: Maps IP addresses → hostnames
+
+---
+
+### Step 6: Create Forward Zone File
+
+Copy the template:
+
 ```bash
-sudo mkfs.ext4 /dev/myvg/lv_data
+sudo cp /etc/bind/db.local /etc/bind/db.linuxtraining25.com
+sudo nano /etc/bind/db.linuxtraining25.com
 ```
 
-### Step 6: Mount Logical Volumes
-Mount lv_apps:
-```bash
-sudo mount /dev/myvg/lv_apps /apps
-```
+Replace with:
 
-Mount lv_data:
-```bash
-sudo mount /dev/myvg/lv_data /data
-```
-
-### Step 7: Verify Mounts
-```bash
-df -h
+```bind
+;
+; BIND data file for linuxtraining25.com
+;
+$TTL    604800
+@       IN      SOA     dns.linuxtraining25.com. root.linuxtraining25.com. (
+                              2         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+;
+@       IN      NS      linuxtraining25.com.
+dns     IN      A       192.168.50.1
+dhcp    IN      A       192.168.50.2
+@       IN      AAAA    ::1
 ```
 
 ---
 
-## 4. Deploy the Web Page
+### Step 7: Create Reverse Zone File
 
-### Create the Sample Web Page
+Copy the template:
+
 ```bash
-echo "<html><body><h1>Sample Web Page</h1></body></html>" | sudo tee /apps/index.html
+sudo cp /etc/bind/db.127 /etc/bind/db.192.168.50
+sudo nano /etc/bind/db.192.168.50
 ```
 
-### Change the Apache DocumentRoot Path
-Edit the Apache configuration file:
-```bash
-sudo vi /etc/apache2/sites-enabled/000-default.conf
-```
+Replace with:
 
-Change `DocumentRoot /var/www/html` to `DocumentRoot /apps`
-
-### Restart Apache
-```bash
-sudo systemctl restart apache2
+```bind
+$TTL    604800
+@   IN  SOA dns.linuxtraining25.com. root.linuxtraining25.com. (
+        2
+        604800
+        86400
+        2419200
+        604800 )
+@   IN  NS  dns.linuxtraining25.com.
+1   IN  PTR dns.linuxtraining25.com.
+2   IN  PTR dhcp.linuxtraining25.com.
 ```
 
 ---
 
-## 5. Install and Configure MySQL
+### Step 8: Restart and Test DNS Server
 
-### Install MySQL Server
+Restart BIND9:
+
 ```bash
-sudo apt install mysql-server -y
+sudo systemctl restart bind9
 ```
 
-### Secure MySQL Installation
-```bash
-sudo mysql_secure_installation
-```
-(Set root password, remove anonymous users, disable remote root login, etc.)
+Test forward lookup:
 
-### Stop MySQL Service
 ```bash
-sudo systemctl stop mysql
+nslookup dns.linuxtraining25.com
 ```
 
-### Create MySQL Data Directory
-```bash
-sudo mkdir /data/mysql
-```
+Test reverse lookup:
 
-### Copy Existing Data
 ```bash
-sudo rsync -av /var/lib/mysql /data/
-```
-
-### Update MySQL Configuration
-Edit the MySQL configuration file:
-```bash
-sudo vim /etc/mysql/mysql.conf.d/mysqld.cnf
-```
-
-Change `datadir = /var/lib/mysql` to `datadir = /data/mysql`
-
-### Set Proper Ownership
-```bash
-sudo chown -R mysql:mysql /data/mysql
-```
-
-### Start MySQL Service
-```bash
-sudo systemctl start mysql
+nslookup 192.168.50.1
 ```
 
 ---
 
-## 6. Create Users with Sudo and Directory Access
+## Phase 4: Install and Configure DHCP Server
 
-### Create Users
-Create appuser:
+### Step 9: Install ISC DHCP Server
+
 ```bash
-sudo useradd -m appuser
+sudo apt install isc-dhcp-server -y
 ```
 
-Create dbuser:
+### Step 10: Configure DHCP Server Interface
+
+Edit the DHCP server configuration to listen only on the internal NIC:
+
 ```bash
-sudo useradd -m dbuser
+sudo nano /etc/default/isc-dhcp-server
 ```
 
-### Set Passwords
-Set password for appuser (same as username):
+Set:
+
+```
+INTERFACESv4="enp0s8"
+```
+
+### Step 11: Configure DHCP Pool and Settings
+
 ```bash
-sudo passwd appuser
+sudo nano /etc/dhcp/dhcpd.conf
 ```
 
-Set password for dbuser (same as username):
+Add:
+
+```dhcp
+subnet 192.168.50.0 netmask 255.255.255.0 {
+  range 192.168.50.100 192.168.50.200;
+  option routers 192.168.50.1;
+  option domain-name-servers 192.168.50.1;
+  option domain-name "linuxtraining25.com";
+}
+```
+
+### Step 12: Restart DHCP Server
+
 ```bash
-sudo passwd dbuser
-```
-
-### Grant Sudo Privileges
-Edit the sudoers file:
-```bash
-sudo visudo
-```
-
-Add the following lines:
-```
-appuser ALL=(ALL) NOPASSWD:ALL
-dbuser ALL=(ALL) ALL
-```
-
-### Restrict Directory Access
-
-Set ownership and permissions for `/apps`:
-```bash
-sudo chown appuser:appuser /apps
-sudo chmod 700 /apps
-```
-
-Set ownership and permissions for `/data`:
-```bash
-sudo chown dbuser:dbuser /data
-sudo chmod 700 /data
-```
-
-Override MySQL subdirectory ownership:
-```bash
-sudo chown -R mysql:mysql /data/mysql
-```
-
-### Test Directory Access
-Test appuser access to /data (should deny):
-```bash
-su - appuser
-ls /data
-```
-
-Test dbuser access to /apps (should deny):
-```bash
-su - dbuser
-ls /apps
+sudo systemctl restart isc-dhcp-server
 ```
 
 ---
 
-## 7. Install and Configure SELinux
+## Phase 5: Add Client DNS Records
 
-### Install SELinux Packages
+### Step 13: Add Clients to Forward Zone
+
+After clients receive DHCP IPs (e.g., 192.168.50.101, 192.168.50.102):
+
 ```bash
-sudo apt install policycoreutils selinux-utils selinux-basics -y
+sudo nano /etc/bind/db.linuxtraining25.com
 ```
 
-### Activate SELinux
-```bash
-sudo selinux-activate
-sudo reboot
+Add:
+
+```bind
+client1 IN A 192.168.50.101
+client2 IN A 192.168.50.102
 ```
 
-### Set Enforcing Mode
+### Step 14: Add Clients to Reverse Zone
+
 ```bash
-sudo selinux-config-enforcing
-sudo reboot
+sudo nano /etc/bind/db.192.168.50
 ```
 
-### Disable AppArmor (Conflicts with SELinux)
-Stop AppArmor:
-```bash
-sudo systemctl stop apparmor
+Add:
+
+```bind
+101 IN PTR client1.linuxtraining25.com.
+102 IN PTR client2.linuxtraining25.com.
 ```
 
-Disable AppArmor permanently:
-```bash
-sudo systemctl disable apparmor
-```
+### Step 15: Restart DNS Server
 
-### Map dbuser to SELinux Context
 ```bash
-sudo semanage login -a -s guest_u dbuser
-```
-
-### Verify SELinux Configuration
-```bash
-sudo semanage login -l
+sudo systemctl restart bind9
 ```
 
 ---
 
-## 8. Kernel Dump and Performance Analysis
+## Phase 6: Verification and Testing
 
-### Enable KDump
+### Verification Commands (Run on Clients)
+
+Forward DNS lookup:
+
 ```bash
-sudo apt install linux-crashdump -y
+ping client2.linuxtraining25.com
+nslookup client2.linuxtraining25.com
+dig client2.linuxtraining25.com
 ```
 
-Reboot the system:
+Reverse DNS lookup:
+
 ```bash
-sudo reboot
-```
-
-### Verify KDump Status
-```bash
-sudo systemctl status kdump-tools
-```
-
-### Trigger a Controlled Crash
-
-Enable SysRq:
-```bash
-echo 1 | sudo tee /proc/sys/kernel/sysrq
-```
-
-Trigger the crash (system will crash and reboot automatically):
-```bash
-echo c | sudo tee /proc/sysrq-trigger
-```
-
-### Analyze the Kernel Dump
-
-Install debug tools:
-```bash
-sudo apt install crash linux-image-$(uname -r)-dbg -y
-```
-
-Analyze the dump file:
-```bash
-sudo crash /var/crash/<timestamp>/vmcore /usr/lib/debug/boot/vmlinux-$(uname -r)
+dig -x 192.168.50.101
 ```
 
 ---
 
 ## Summary
 
-This comprehensive guide covers:
-- Loop device and RAID 0 setup for storage redundancy
-- LVM configuration for flexible storage management
-- Apache web server deployment on dedicated logical volume
-- MySQL database installation with custom data directory
-- User creation with granular permission control
-- SELinux security enforcement
-- Kernel dump analysis for troubleshooting
+This setup creates a complete DNS and DHCP infrastructure with:
+- **DNS Server**: BIND9 managing forward and reverse zones for `linuxtraining25.com`
+- **DHCP Server**: ISC DHCP distributing IPs in the 192.168.50.100-200 range
+- **Private Network**: Internal network adapter creates isolated LAN between VMs
+- **Name Resolution**: Both forward and reverse DNS lookups functional for all clients
