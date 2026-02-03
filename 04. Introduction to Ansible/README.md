@@ -1,8 +1,4 @@
-# ANSIBLE - CONCISE NOTES
-
-**Presenter:** Akini Karunarathne, Systems Engineer  
-**Date:** July 03, 2025
-
+# ANSIBLE - NOTE
 ---
 
 ## What is Ansible?
