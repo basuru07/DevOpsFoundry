@@ -497,7 +497,3 @@ Ansible automates IT operations through:
 - `roles/` - Reusable content
 
 ---
-
-**Resources:**
-- https://docs.ansible.com
-- https://galaxy.ansible.com
