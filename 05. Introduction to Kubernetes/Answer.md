@@ -1,314 +1,280 @@
-# DNS and DHCP Server Setup Guide
+# PART 1 - Kubernetes Cluster Setup using Kubeadm
 
-## Phase 1: Virtual Machine Network Configuration
+## 1. Create Nodes
 
-### Step 1: Configure VM Network Adapters
+- 1 Master Node, 2 Worker Nodes
 
-For each VM in VirtualBox settings:
+**Reason:** Defines the cluster layout for control and workload distribution.
 
-1. Go to **Settings → Network**
-2. **Adapter 1**: Set to `NAT` (enabled)
-3. **Adapter 2**: Set to `Internal Network` (enabled)
-   - This creates a private LAN between VMs as required by the task
-
----
-
-## Phase 2: DNS Server Configuration
-
-### Step 2: Configure DNS Server Network Interface
-
-Login to the DNS server and configure netplan for a fixed IP address.
+## 2. Set Hostnames
 
 ```bash
-sudo nano /etc/netplan/00-installer-config.yaml
+sudo hostnamectl set-hostname master
+sudo hostnamectl set-hostname worker1
+sudo hostnamectl set-hostname worker2
 ```
 
-Replace with:
+**Reason:** Kubernetes uses hostnames to identify and manage nodes properly.
+
+## 3. Update `/etc/hosts`
+
+```bash
+192.168.1.10 master
+192.168.1.11 worker1
+192.168.1.12 worker2
+```
+
+**Reason:** Ensures internal communication between nodes using hostnames.
+
+## 4. Disable Swap
+
+```bash
+sudo swapoff -a
+sudo sed -i '/ swap / s/^/#/' /etc/fstab
+```
+
+**Reason:** Kubernetes requires swap disabled for proper resource scheduling.
+
+## 5. Install Containerd
+
+```bash
+sudo apt update
+sudo apt install -y containerd
+sudo mkdir -p /etc/containerd
+sudo containerd config default | sudo tee /etc/containerd/config.toml
+sudo systemctl restart containerd
+sudo systemctl enable containerd
+```
+
+**Reason:** Container runtime is required to run containers on all nodes.
+
+## 6. Install Kubernetes Tools
+
+```bash
+sudo apt install -y apt-transport-https curl
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+sudo apt update
+sudo apt install -y kubelet kubeadm kubectl
+sudo apt-mark hold kubelet kubeadm kubectl
+```
+
+**Reason:** Tools to initialize, manage, and operate the Kubernetes cluster.
+
+## 7. Initialize Control Plane (Master Node)
+
+```bash
+sudo kubeadm init --control-plane-endpoint=master --pod-network-cidr=192.168.0.0/16
+```
+
+**Reason:** Sets up the Kubernetes master node and cluster control plane.
+
+## 8. Configure kubectl (Master Node)
+
+```bash
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+```
+
+**Reason:** Allows the master to manage the cluster using kubectl.
+
+## 9. Join Worker Nodes
+
+```bash
+sudo kubeadm join master:6443 --token <token> --discovery-token-ca-cert-hash sha256:<hash>
+```
+
+**Reason:** Adds worker nodes to the cluster to run workloads.
+
+## 10. Install Network Plugin (Calico)
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml
+```
+
+**Reason:** Enables pod-to-pod networking across all nodes in the cluster.
+
+## 11. Check Cluster Nodes
+
+```bash
+kubectl get nodes
+```
+
+**Reason:** Verifies all nodes are successfully joined and ready.
+
+## 12. Verify System Pods
+
+```bash
+kubectl get pods -n kube-system
+```
+
+**Reason:** Confirms all control plane components are running correctly.
+
+
+# PART 2 - Deploy a Sample Three-Tier Web Application
+
+# Kubernetes Guestbook Application
+
+## 1. Redis Leader
+
+Create `redis-leader.yaml`:
 
 ```yaml
-network:
-  version: 2
-  ethernets:
-    enp0s8:
-      dhcp4: no
-      addresses:
-        - 192.168.50.1/24
-      gateway4: 192.168.50.1
-      nameservers:
-        addresses: [127.0.0.1]
-```
-
-Apply and verify:
-
-```bash
-sudo netplan apply
-ip a
-```
-
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-leader
+spec:
+  ports:
+    - port: 6379
+  selector:
+    app: redis
+    role: leader
 ---
-
-### Step 3: Configure DHCP Server Network Interface
-
-Login to the DHCP server and configure netplan.
-
-```bash
-sudo nano /etc/netplan/00-installer-config.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-leader
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+      role: leader
+  template:
+    metadata:
+      labels:
+        app: redis
+        role: leader
+    spec:
+      containers:
+      - name: redis
+        image: redis:6.0
+        ports:
+        - containerPort: 6379
 ```
 
-Replace with:
+Deploy:
+
+```bash
+kubectl apply -f redis-leader.yaml
+```
+
+## 2. Redis Followers
+
+Create `redis-follower.yaml`:
 
 ```yaml
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    enp0s8:
-      dhcp4: no
-      addresses:
-        - 192.168.50.2/24
-      nameservers:
-        addresses: [192.168.50.1]
-```
-
-Apply and verify:
-
-```bash
-sudo netplan apply
-ip a
-```
-
-### Expected Network Configuration
-
-| Server | Interface | IP Address |
-|--------|-----------|-----------|
-| main (DNS) | enp0s8 | 192.168.50.1 |
-| k8s-worker2 (DHCP) | enp0s8 | 192.168.50.2 |
-
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-follower
+spec:
+  ports:
+    - port: 6379
+  selector:
+    app: redis
+    role: follower
 ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-follower
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: redis
+      role: follower
+  template:
+    metadata:
+      labels:
+        app: redis
+        role: follower
+    spec:
+      containers:
+      - name: redis
+        image: redis:6.0
+        ports:
+        - containerPort: 6379
+```
 
-## Phase 3: Install and Configure BIND9 (DNS Server)
-
-### Step 4: Install BIND9
+Deploy:
 
 ```bash
-sudo apt install bind9 bind9utils -y
+kubectl apply -f redis-follower.yaml
 ```
 
-### Step 5: Define DNS Zones
+## 3. Frontend Application
 
-```bash
-sudo nano /etc/bind/named.conf.local
-```
+Create `frontend.yaml`:
 
-Add:
-
-```bind
-zone "linuxtraining25.com" {
-    type master;
-    file "/etc/bind/db.linuxtraining25.com";
-};
-
-zone "50.168.192.in-addr.arpa" {
-    type master;
-    file "/etc/bind/db.192.168.50";
-};
-```
-
-#### Zone Type Reference
-
-- **Forward Zone**: Maps hostnames → IP addresses
-- **Reverse Zone**: Maps IP addresses → hostnames
-
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: guestbook
+spec:
+  type: NodePort
+  ports:
+    - port: 80
+      nodePort: 30080
+  selector:
+    app: guestbook
 ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guestbook
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: guestbook
+  template:
+    metadata:
+      labels:
+        app: guestbook
+    spec:
+      containers:
+      - name: php-guestbook
+        image: gcr.io/google-samples/gb-frontend:v4
+        ports:
+        - containerPort: 80
+        env:
+        - name: GET_HOSTS_FROM
+          value: "env"
+```
 
-### Step 6: Create Forward Zone File
-
-Copy the template:
+Deploy:
 
 ```bash
-sudo cp /etc/bind/db.local /etc/bind/db.linuxtraining25.com
-sudo nano /etc/bind/db.linuxtraining25.com
+kubectl apply -f frontend.yaml
 ```
 
-Replace with:
+## 4. Access Frontend
 
-```bind
-;
-; BIND data file for linuxtraining25.com
-;
-$TTL    604800
-@       IN      SOA     dns.linuxtraining25.com. root.linuxtraining25.com. (
-                              2         ; Serial
-                         604800         ; Refresh
-                          86400         ; Retry
-                        2419200         ; Expire
-                         604800 )       ; Negative Cache TTL
-;
-@       IN      NS      linuxtraining25.com.
-dns     IN      A       192.168.50.1
-dhcp    IN      A       192.168.50.2
-@       IN      AAAA    ::1
-```
-
----
-
-### Step 7: Create Reverse Zone File
-
-Copy the template:
+Get Node IP:
 
 ```bash
-sudo cp /etc/bind/db.127 /etc/bind/db.192.168.50
-sudo nano /etc/bind/db.192.168.50
+kubectl get nodes -o wide
 ```
 
-Replace with:
+Open browser:
 
-```bind
-$TTL    604800
-@   IN  SOA dns.linuxtraining25.com. root.linuxtraining25.com. (
-        2
-        604800
-        86400
-        2419200
-        604800 )
-@   IN  NS  dns.linuxtraining25.com.
-1   IN  PTR dns.linuxtraining25.com.
-2   IN  PTR dhcp.linuxtraining25.com.
+```
+http://<NodeIP>:30080
 ```
 
----
+## 5. Test Guestbook
 
-### Step 8: Restart and Test DNS Server
+- Add entries on web UI
+- Verify entries are stored in Redis
 
-Restart BIND9:
+## 6. Verify Pods & Services
 
 ```bash
-sudo systemctl restart bind9
+kubectl get pods
+kubectl get svc
 ```
-
-Test forward lookup:
-
-```bash
-nslookup dns.linuxtraining25.com
-```
-
-Test reverse lookup:
-
-```bash
-nslookup 192.168.50.1
-```
-
----
-
-## Phase 4: Install and Configure DHCP Server
-
-### Step 9: Install ISC DHCP Server
-
-```bash
-sudo apt install isc-dhcp-server -y
-```
-
-### Step 10: Configure DHCP Server Interface
-
-Edit the DHCP server configuration to listen only on the internal NIC:
-
-```bash
-sudo nano /etc/default/isc-dhcp-server
-```
-
-Set:
-
-```
-INTERFACESv4="enp0s8"
-```
-
-### Step 11: Configure DHCP Pool and Settings
-
-```bash
-sudo nano /etc/dhcp/dhcpd.conf
-```
-
-Add:
-
-```dhcp
-subnet 192.168.50.0 netmask 255.255.255.0 {
-  range 192.168.50.100 192.168.50.200;
-  option routers 192.168.50.1;
-  option domain-name-servers 192.168.50.1;
-  option domain-name "linuxtraining25.com";
-}
-```
-
-### Step 12: Restart DHCP Server
-
-```bash
-sudo systemctl restart isc-dhcp-server
-```
-
----
-
-## Phase 5: Add Client DNS Records
-
-### Step 13: Add Clients to Forward Zone
-
-After clients receive DHCP IPs (e.g., 192.168.50.101, 192.168.50.102):
-
-```bash
-sudo nano /etc/bind/db.linuxtraining25.com
-```
-
-Add:
-
-```bind
-client1 IN A 192.168.50.101
-client2 IN A 192.168.50.102
-```
-
-### Step 14: Add Clients to Reverse Zone
-
-```bash
-sudo nano /etc/bind/db.192.168.50
-```
-
-Add:
-
-```bind
-101 IN PTR client1.linuxtraining25.com.
-102 IN PTR client2.linuxtraining25.com.
-```
-
-### Step 15: Restart DNS Server
-
-```bash
-sudo systemctl restart bind9
-```
-
----
-
-## Phase 6: Verification and Testing
-
-### Verification Commands (Run on Clients)
-
-Forward DNS lookup:
-
-```bash
-ping client2.linuxtraining25.com
-nslookup client2.linuxtraining25.com
-dig client2.linuxtraining25.com
-```
-
-Reverse DNS lookup:
-
-```bash
-dig -x 192.168.50.101
-```
-
----
-
-## Summary
-
-This setup creates a complete DNS and DHCP infrastructure with:
-- **DNS Server**: BIND9 managing forward and reverse zones for `linuxtraining25.com`
-- **DHCP Server**: ISC DHCP distributing IPs in the 192.168.50.100-200 range
-- **Private Network**: Internal network adapter creates isolated LAN between VMs
-- **Name Resolution**: Both forward and reverse DNS lookups functional for all clients

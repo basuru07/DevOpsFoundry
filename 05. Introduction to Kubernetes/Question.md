@@ -2,8 +2,6 @@
 
 ## Assignment Details
 
-# DNS and DHCP Server Configuration Lab
-
 ## Overview
 
 - The goal of this assignment is to provide hands-on experience in deploying and managing Kubernetes infrastructure and workloads.  
@@ -51,6 +49,8 @@ Ensure all nodes are in the Ready state. Verify  that the control plane componen
 
 - A detailed report documenting each step taken, including configurations and commands used.
 - Screenshots or outputs demonstrating the successful setup and health of the cluster. 
+
+
 
 
 ### PART 2. Deploy a Sample Three-Tier Web Application
